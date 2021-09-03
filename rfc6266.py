@@ -11,10 +11,9 @@ filename_unsafe, filename_sanitized.
 build_header handles the sender side.
 """
 
-from lepl import *
+from pyparsing import *
 from collections import namedtuple
-from urllib import quote, unquote
-from urlparse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from string import hexdigits, ascii_letters, digits
 
 import logging
@@ -29,37 +28,25 @@ try:
 except AttributeError:
     pass
 
-__all__ = (
-    'ContentDisposition',
-    'parse_headers',
-    'parse_httplib2_response',
-    'parse_requests_response',
-    'build_header',
-)
+# TODO put back in
+# __all__ = (
+#     'ContentDisposition',
+#     'parse_headers',
+#     'parse_httplib2_response',
+#     'parse_requests_response',
+#     'build_header',
+# )
 
-
-PY3K = sys.version_info >= (3,)
 
 LangTagged = namedtuple('LangTagged', 'string langtag')
 
+# XXX Both implementations allow stray %
+def percent_encode(string, safe, encoding):
+    return quote(string, safe, encoding, errors='strict')
 
-if PY3K:
-    # XXX Both implementations allow stray %
-    def percent_encode(string, safe, encoding):
-        return quote(string, safe, encoding, errors='strict')
-
-    def percent_decode(string, encoding):
-        # unquote doesn't default to strict, fix that
-        return unquote(string, encoding, errors='strict')
-else:
-    def percent_encode(string, **kwargs):
-        encoding = kwargs.pop('encoding')
-        return quote(string.encode(encoding), **kwargs)
-
-    def percent_decode(string, **kwargs):
-        encoding = kwargs.pop('encoding')
-        return unquote(string, **kwargs).decode(encoding)
-
+def percent_decode(string, encoding):
+    # unquote doesn't default to strict, fix that
+    return unquote(string, encoding, errors='strict')
 
 class ContentDisposition(object):
     """
@@ -225,8 +212,8 @@ def parse_headers(content_disposition, location=None, relaxed=False):
         parser = content_disposition_value
 
     try:
-        parsed = parser.parse(content_disposition)
-    except FullFirstMatchException:
+        parsed = parser.parseString(content_disposition)
+    except ParseException:
         return ContentDisposition(location=location)
     return ContentDisposition(
         disposition=parsed[0], assocs=parsed[1:], location=location)
@@ -249,6 +236,7 @@ def parse_requests_response(response, **kwargs):
         response.headers.get('content-disposition'), response.url, **kwargs)
 
 
+## TODO transform
 def parse_ext_value(val):
     charset = val[0]
     if len(val) == 3:
@@ -256,8 +244,6 @@ def parse_ext_value(val):
     else:
         charset, coded = val
         langtag = None
-    if not PY3K and isinstance(coded, unicode):
-        coded = coded.encode('ascii')
     decoded = percent_decode(coded, encoding=charset)
     return LangTagged(decoded, langtag)
 
@@ -270,7 +256,7 @@ def CaseInsensitiveLiteral(lit):
 
 # RFC 2616
 separator_chars = "()<>@,;:\\\"/[]?={} \t"
-ctl_chars = ''.join(chr(i) for i in xrange(32)) + chr(127)
+ctl_chars = ''.join(chr(i) for i in range(32)) + chr(127)
 nontoken_chars = separator_chars + ctl_chars
 
 # RFC 5987
@@ -280,14 +266,10 @@ attr_chars = ascii_letters + digits + attr_chars_nonalnum
 # RFC 5987 gives this alternative construction of the token character class
 token_chars = attr_chars + "*'%"
 
-
-# To debug, wrap in this block:
-#with TraceVariables():
-
 # Definitions from https://tools.ietf.org/html/rfc2616#section-2.2
 # token was redefined from attr_chars to avoid using AnyBut,
 # which might include non-ascii octets.
-token = Any(token_chars)[1:, ...]
+token = Combine(Char(token_chars)[1, ...])
 
 
 # RFC 2616 says some linear whitespace (LWS) is in fact allowed in text
@@ -304,53 +286,47 @@ token = Any(token_chars)[1:, ...]
 # is in an ascii-safe encoding.
 # Because of this, this is the only character class to use AnyBut,
 # and all the others are defined with Any.
-qdtext = AnyBut('"' + ctl_chars)
+qdtext = CharsNotIn('"' + ctl_chars, exact=1)
 
-char = Any(''.join(chr(i) for i in xrange(128)))  # ascii range: 0-127
+char = Char(''.join(chr(i) for i in range(128)))  # ascii range: 0-127
 
-quoted_pair = Drop('\\') + char
-quoted_string = Drop('"') & (quoted_pair | qdtext)[:, ...] & Drop('"')
+quoted_pair = Suppress('\\') + char
+quoted_string = Suppress('"') + Combine((quoted_pair | qdtext)[...]) + Suppress('"')
 
 value = token | quoted_string
 
 # Other charsets are forbidden, the spec reserves them
 # for future evolutions.
-charset = (CaseInsensitiveLiteral('UTF-8')
-           | CaseInsensitiveLiteral('ISO-8859-1'))
+charset = CaselessLiteral('UTF-8') | CaselessLiteral('ISO-8859-1')
 
 # XXX See RFC 5646 for the correct definition
-language = token
+language = Combine(Char(attr_chars + "*%")[1, ...]) # like token but without '
 
-attr_char = Any(attr_chars)
-hexdig = Any(hexdigits)
+attr_char = Char(attr_chars)
+hexdig = Char(hexdigits)
 pct_encoded = '%' + hexdig + hexdig
-value_chars = (pct_encoded | attr_char)[...]
+value_chars = Combine((pct_encoded | attr_char)[...])
 ext_value = (
-    charset & Drop("'") & Optional(language) & Drop("'")
-    & value_chars) > parse_ext_value
-ext_token = token + '*'
-noext_token = ~Lookahead(ext_token) & token
+    charset + Suppress("'") + Optional(language) + Suppress("'")
+    + value_chars).setParseAction(parse_ext_value)
+ext_token = Combine(Char(attr_chars + "'%")[1, ...] + '*')
 
 # Adapted from https://tools.ietf.org/html/rfc6266
 # Mostly this was simplified to fold filename / filename*
 # into the normal handling of ext_token / noext_token
-with DroppedSpace():
-    disposition_parm = (
-        (ext_token & Drop('=') & ext_value)
-        | (noext_token & Drop('=') & value)) > tuple
-    disposition_type = (
-        CaseInsensitiveLiteral('inline')
-        | CaseInsensitiveLiteral('attachment')
-        | token)
-    content_disposition_value = (
-        disposition_type & Star(Drop(';') & disposition_parm))
+disposition_parm = (
+    (ext_token + Suppress('=') + ext_value)
+    | (token + Suppress('=') + value)).setParseAction(tuple)
+disposition_type = (
+    CaselessLiteral('inline')
+    | CaselessLiteral('attachment')
+    | token)
+content_disposition_value = StringStart() + disposition_type + (Suppress(';') + disposition_parm)[...] + StringEnd()
 
-    # Allows nonconformant final semicolon
-    # I've seen it in the wild, and browsers accept it
-    # http://greenbytes.de/tech/tc2231/#attwithasciifilenamenqs
-    content_disposition_value_relaxed = (
-        content_disposition_value & Optional(Drop(';')))
-
+# Allows nonconformant final semicolon
+# I've seen it in the wild, and browsers accept it
+# http://greenbytes.de/tech/tc2231/#attwithasciifilenamenqs
+content_disposition_value_relaxed = StringStart() + disposition_type + (Suppress(';') + disposition_parm)[...] + Optional(Suppress(';')) + StringEnd()
 
 def is_token_char(ch):
     # Must be ascii, and neither a control char nor a separator char
@@ -448,7 +424,5 @@ def build_header(
     # Python encodes ~ when it shouldn't, for example.
     rv += "; filename*=utf-8''%s" % (percent_encode(
         filename, safe=attr_chars_nonalnum, encoding='utf-8'), )
-
-    # This will only encode filename_compat, if it used non-ascii iso-8859-1.
-    return rv.encode('iso-8859-1')
-
+    #
+    return rv

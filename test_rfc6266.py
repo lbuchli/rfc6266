@@ -23,22 +23,18 @@ def test_parsing():
     assert cd.filename_unsafe == u'€ rates'
 
 
-@pytest.mark.skipif("(3,0) <= sys.version_info < (3,3)")
 def test_httplib2(httpserver):
     httplib2 = pytest.importorskip('httplib2')
     http = httplib2.Http()
-    httpserver.serve_content('eep', headers={
-        'Content-Disposition': 'attachment; filename="a b="'})
-    resp, content = http.request(httpserver.url)
+    httpserver.expect_request('/').respond_with_json({}, headers={'Content-Disposition': 'attachment; filename="a b="'})
+    resp, content = http.request(httpserver.url_for('/'))
     assert parse_httplib2_response(resp).filename_unsafe == 'a b='
 
 
-@pytest.mark.skipif("(3,0) <= sys.version_info < (3,3)")
 def test_requests(httpserver):
     requests = pytest.importorskip('requests')
-    httpserver.serve_content('eep', headers={
-        'Content-Disposition': 'attachment; filename="a b="'})
-    resp = requests.get(httpserver.url)
+    httpserver.expect_request('/').respond_with_json({}, headers={'Content-Disposition': 'attachment; filename="a b="'})
+    resp = requests.get(httpserver.url_for('/'))
     assert parse_requests_response(resp).filename_unsafe == 'a b='
 
 

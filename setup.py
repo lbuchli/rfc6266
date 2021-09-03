@@ -12,11 +12,9 @@ setup(
     license='GNU LGPL',
     platforms='OS-independent',
     py_modules=['rfc6266', 'test_rfc6266'],
-    install_requires=['LEPL'],
-    use_2to3=True,
+    install_requires=['pyparsing'],
     long_description=open('README').read(),
     classifiers=(
-        'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: Implementation :: CPython',
         'Programming Language :: Python :: Implementation :: PyPy',
